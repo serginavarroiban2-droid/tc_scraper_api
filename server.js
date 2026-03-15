@@ -19,7 +19,6 @@ async function scrapeTodocoleccion(page, query) {
         console.log(`Buscant a TC: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
 
-        // Acceptar cookies si apareix el botó
         try {
             const cookieButton = await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 3000 });
             if (cookieButton) await cookieButton.click();
@@ -27,20 +26,28 @@ async function scrapeTodocoleccion(page, query) {
 
         await new Promise(r => setTimeout(r, 1000));
 
-        const preus = await page.evaluate(() => {
-            // Selectors actualitzats de TC
-            const selectors = ['.price-main', '.item-price', '.price', '.price-value'];
-            let resultats = [];
-            selectors.forEach(sel => {
-                document.querySelectorAll(sel).forEach(el => {
-                    let text = el.innerText.replace('€', '').replace('$', '').replace(',', '.').trim();
-                    let p = parseFloat(text);
-                    if (!isNaN(p) && p > 0) resultats.push(p);
-                });
+        const resultats = await page.evaluate(() => {
+            const items = document.querySelectorAll('.lote, .js-lot-container');
+            let data = [];
+            items.forEach(item => {
+                const titleEl = item.querySelector('.js-lot-titles, .title, h2');
+                const priceEl = item.querySelector('.price-main, .item-price, .price');
+                const linkEl = item.querySelector('a.js-lot-titles, a.title, a');
+
+                if (titleEl && priceEl) {
+                    let priceText = priceEl.innerText.replace('€', '').replace('$', '').replace(',', '.').trim();
+                    let price = parseFloat(priceText);
+                    let title = titleEl.innerText.trim();
+                    let itemUrl = linkEl ? linkEl.href : null;
+
+                    if (!isNaN(price) && price > 0) {
+                        data.push({ title, price, url: itemUrl, source: 'Todocoleccion' });
+                    }
+                }
             });
-            return resultats;
+            return data;
         });
-        return preus;
+        return resultats;
     } catch (e) {
         console.error('Error TC:', e.message);
         return [];
@@ -48,23 +55,33 @@ async function scrapeTodocoleccion(page, query) {
 }
 
 async function scrapeIberlibro(page, query) {
-    // Busquem per paraules clau al camp de cerca general
     const url = `https://www.iberlibro.com/servlet/SearchResults?cm_sp=SearchF-_-topnav-_-Results&kn=${encodeURIComponent(query)}&sts=t`;
     try {
         console.log(`Buscant a Iberlibro: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
 
-        const preus = await page.evaluate(() => {
-            const elements = document.querySelectorAll('.item-price, .price');
-            let resultats = [];
-            elements.forEach(el => {
-                let text = el.innerText.replace('EUR', '').replace('€', '').replace(',', '.').trim();
-                let p = parseFloat(text);
-                if (!isNaN(p) && p > 0) resultats.push(p);
+        const resultats = await page.evaluate(() => {
+            const items = document.querySelectorAll('.result-item, .item-display');
+            let data = [];
+            items.forEach(item => {
+                const titleEl = item.querySelector('[itemprop="name"], .item-title');
+                const priceEl = item.querySelector('.item-price, .price');
+                const linkEl = item.querySelector('a[itemprop="url"], a');
+
+                if (titleEl && priceEl) {
+                    let priceText = priceEl.innerText.replace('EUR', '').replace('€', '').replace(',', '.').trim();
+                    let price = parseFloat(priceText);
+                    let title = titleEl.innerText.trim();
+                    let itemUrl = linkEl ? linkEl.href : null;
+
+                    if (!isNaN(price) && price > 0) {
+                        data.push({ title, price, url: itemUrl, source: 'Iberlibro' });
+                    }
+                }
             });
-            return resultats;
+            return data;
         });
-        return preus;
+        return resultats;
     } catch (e) {
         console.error('Error Iberlibro:', e.message);
         return [];
@@ -72,8 +89,8 @@ async function scrapeIberlibro(page, query) {
 }
 
 app.get('/api/tassa', async (req, res) => {
-    const { q, isbn, titol, autor } = req.query;
-    let query = q || isbn || `${titol || ''} ${autor || ''}`.trim();
+    const { isbn, titol, autor } = req.query;
+    let query = isbn || `${titol || ''} ${autor || ''}`.trim();
 
     if (!query) return res.status(400).json({ error: 'Falta paràmetre de cerca' });
 
@@ -88,22 +105,23 @@ app.get('/api/tassa', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
 
-        const [preusTC, preusIber] = await Promise.all([
+        const [resTC, resIber] = await Promise.all([
             scrapeTodocoleccion(page, query),
             scrapeIberlibro(page, query)
         ]);
 
-        const allPrices = [...preusTC, ...preusIber].sort((a, b) => a - b);
-        const uniquePrices = [...new Set(allPrices)];
+        const allResults = [...resTC, ...resIber];
+        const prices = allResults.map(r => r.price).sort((a, b) => a - b);
 
         res.json({
             terme: query,
-            comptador: uniquePrices.length,
-            min: uniquePrices.length > 0 ? uniquePrices[0] : null,
-            max: uniquePrices.length > 0 ? uniquePrices[uniquePrices.length - 1] : null,
-            mitjana: uniquePrices.length > 0 ? (uniquePrices.reduce((a, b) => a + b, 0) / uniquePrices.length).toFixed(2) : null,
-            preus: uniquePrices,
-            fonts: { tc: preusTC.length, iberlibro: preusIber.length }
+            llibre: { titol, autor, isbn },
+            comptador: allResults.length,
+            min: prices.length > 0 ? prices[0] : null,
+            max: prices.length > 0 ? prices[prices.length - 1] : null,
+            mitjana: prices.length > 0 ? (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(2) : null,
+            results: allResults,
+            fonts: { tc: resTC.length, iberlibro: resIber.length }
         });
 
     } catch (error) {
