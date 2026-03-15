@@ -29,25 +29,19 @@ async function scrapeTodocoleccion(page, query, targetTitle) {
         console.log(`Buscant a TC: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
 
-        // Verifiquem si hi ha el missatge de "no s'han trobat resultats"
-        const noResults = await page.evaluate(() => {
-            return document.body.innerText.includes('No hemos encontrado resultados') || 
-                   document.body.innerText.includes('0 lotes encontrados');
-        });
-        if (noResults) return [];
-
         const resultats = await page.evaluate(() => {
-            const items = document.querySelectorAll('.lote, .js-lot-container');
+            // L'estructura de TC pot ser llista o graella. Busquem el contenidor de lot.
+            const items = document.querySelectorAll('.lote, .js-lot-container, .lot-box, .card-lot');
             let data = [];
             items.forEach(item => {
-                const titleEl = item.querySelector('.js-lot-titles, .title, h2');
-                const priceEl = item.querySelector('.price-main, .item-price, .price, .item-price-current');
-                const linkEl = item.querySelector('a.js-lot-titles, a.title, a');
+                const titleEl = item.querySelector('.js-lot-titles, .title, [id^="lot-title-"]');
+                const priceEl = item.querySelector('.precio-actual, .price-main, .lote-precio, .item-price');
+                const linkEl = item.querySelector('a.js-lot-titles, a.title, a.stretched-link, a');
 
                 if (titleEl && priceEl) {
-                    let priceText = priceEl.innerText.replace('€', '').replace('$', '').replace(',', '.').replace(/[^\d.]/g, '').trim();
-                    let price = parseFloat(priceText);
                     let title = titleEl.innerText.trim();
+                    let priceText = priceEl.innerText.replace(/[^\d.,]/g, '').replace(',', '.').trim();
+                    let price = parseFloat(priceText);
                     let itemUrl = linkEl ? linkEl.href : null;
 
                     if (!isNaN(price) && price > 0 && itemUrl) {
@@ -58,12 +52,10 @@ async function scrapeTodocoleccion(page, query, targetTitle) {
             return data;
         });
 
-        // Filtrar resultats poc rellevants si tenim un títol objectiu
         if (targetTitle && resultats.length > 0) {
-            return resultats.filter(r => similarity(targetTitle, r.title) > 0.3)
+            return resultats.filter(r => similarity(targetTitle, r.title) > 0.25)
                             .map(r => ({ ...r, source: 'Todocoleccion' }));
         }
-
         return resultats.map(r => ({ ...r, source: 'Todocoleccion' }));
     } catch (e) {
         console.error('Error TC:', e.message);
@@ -72,23 +64,23 @@ async function scrapeTodocoleccion(page, query, targetTitle) {
 }
 
 async function scrapeIberlibro(page, query, targetTitle) {
-    const url = `https://www.iberlibro.com/servlet/SearchResults?cm_sp=SearchF-_-topnav-_-Results&kn=${encodeURIComponent(query)}&sts=t`;
+    const url = `https://www.iberlibro.com/servlet/SearchResults?kn=${encodeURIComponent(query)}&sts=t`;
     try {
         console.log(`Buscant a Iberlibro: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
 
         const resultats = await page.evaluate(() => {
-            const items = document.querySelectorAll('.result-item, .item-display');
+            const items = document.querySelectorAll('.result-item, .item-display, [data-testid="listing-container"], .srp-item');
             let data = [];
             items.forEach(item => {
-                const titleEl = item.querySelector('[itemprop="name"], .item-title');
-                const priceEl = item.querySelector('.item-price, .price');
-                const linkEl = item.querySelector('a[itemprop="url"], a');
+                const titleEl = item.querySelector('[data-testid="listing-title"], .item-title, [itemprop="name"]');
+                const priceEl = item.querySelector('[data-testid="listing-price"], .item-price, .price');
+                const linkEl = item.querySelector('a[data-testid="listing-title-link"], a[itemprop="url"], a');
 
                 if (titleEl && priceEl) {
-                    let priceText = priceEl.innerText.replace('EUR', '').replace('€', '').replace(',', '.').replace(/[^\d.]/g, '').trim();
-                    let price = parseFloat(priceText);
                     let title = titleEl.innerText.trim();
+                    let priceText = priceEl.innerText.replace(/[^\d.,]/g, '').replace(',', '.').trim();
+                    let price = parseFloat(priceText);
                     let itemUrl = linkEl ? linkEl.href : null;
 
                     if (!isNaN(price) && price > 0 && itemUrl) {
@@ -100,10 +92,9 @@ async function scrapeIberlibro(page, query, targetTitle) {
         });
 
         if (targetTitle && resultats.length > 0) {
-            return resultats.filter(r => similarity(targetTitle, r.title) > 0.3)
+            return resultats.filter(r => similarity(targetTitle, r.title) > 0.25)
                             .map(r => ({ ...r, source: 'Iberlibro' }));
         }
-
         return resultats.map(r => ({ ...r, source: 'Iberlibro' }));
     } catch (e) {
         console.error('Error Iberlibro:', e.message);
