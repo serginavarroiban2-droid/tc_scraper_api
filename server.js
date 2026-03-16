@@ -10,15 +10,75 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-    res.json({ status: 'ok', servei: 'TC Radar de Preus', versio: '3.0.0' });
+    res.json({ status: 'ok', servei: 'TC Radar de Preus', versio: '3.1.0' });
 });
+
+// =====================================================
+// VALIDACIÓ D'ISBN
+// Un ISBN vàlid té 10 o 13 dígits (pot tenir un X al final en ISBN-10)
+// "S/I-64854040" NO és vàlid. "9788420412146" SÍ.
+// =====================================================
+function isValidIsbn(isbn) {
+    if (!isbn) return false;
+    const cleaned = isbn.replace(/[-\s]/g, '');
+    // ISBN-13: 13 dígits
+    if (/^\d{13}$/.test(cleaned)) return true;
+    // ISBN-10: 9 dígits + (dígit o X)
+    if (/^\d{9}[\dXx]$/.test(cleaned)) return true;
+    return false;
+}
+
+// =====================================================
+// FILTRE DE RELLEVÀNCIA
+// Compara el títol del resultat amb el títol cercat.
+// Retorna un score de 0 a 1. Mínim 0.25 per acceptar.
+// =====================================================
+function relevanceScore(resultTitle, searchTitle) {
+    if (!resultTitle || !searchTitle) return 0;
+    
+    const stopWords = new Set([
+        'la', 'lo', 'el', 'un', 'una', 'de', 'del', 'en', 'y', 'a', 
+        'con', 'por', 'para', 'los', 'las', 'les', 'al', 'se', 'su',
+        'o', 'e', 'i', 'the', 'of', 'and', 'in', 'to',
+        // Paraules massa genèriques en context TC
+        'libro', 'libros', 'segunda', 'mano', 'edición', 'edicion',
+        'editorial', 'tomo', 'vol', 'volumen',
+    ]);
+    
+    // Normalitzar: minúscules, treure puntuació, accents simplificats
+    const normalize = (s) => s.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // treure accents
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()'"¿¡\[\]]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    
+    const n1 = normalize(searchTitle);
+    const n2 = normalize(resultTitle);
+    
+    // Extracció de paraules significatives (>2 lletres, no stop words)
+    const words1 = n1.split(' ').filter(w => w.length > 2 && !stopWords.has(w));
+    const words2 = n2.split(' ').filter(w => w.length > 2 && !stopWords.has(w));
+    
+    if (words1.length === 0) return 0;
+    
+    // Comptar paraules del títol cercat que apareixen al resultat
+    let matches = 0;
+    for (const w of words1) {
+        // Cercar com a substring (per capturar plurals, etc.)
+        if (words2.some(w2 => w2.includes(w) || w.includes(w2))) {
+            matches++;
+        }
+    }
+    
+    const score = matches / words1.length;
+    return score;
+}
 
 // =====================================================
 // FUNCIO AUXILIAR: Acceptar cookies de TC
 // =====================================================
 async function acceptCookies(page) {
     try {
-        // Esperar que aparegui el banner de cookies (màx 3s)
         await page.waitForSelector('button', { timeout: 3000 });
         const buttons = await page.$$('button');
         for (const btn of buttons) {
@@ -38,84 +98,42 @@ async function acceptCookies(page) {
 // =====================================================
 // SCRAPER TODOCOLECCION (Selectors actualitzats Mar 2026)
 // =====================================================
-// Estructura real HTML de TC:
-//   .card-lote.card-lote-as-gallery[data-testid="ID"]
-//     a[id="lot-title-ID"].stretched-link.js-lot-titles
-//       title="TITOL COMPLET" href="/categoria/slug~xID"
-//     span.card-price  → "12,00 €"
-//     strike.card-offer-price → preu original tatxat (opcional)
-//     a.fs-14.text-gray-500 → categoria
-// =====================================================
 async function scrapeTodocoleccion(page, query) {
-    // URL CORRECTA: /buscador?bu=QUERY (no /s/catalogo-libros ni ?t=)
     const url = `https://www.todocoleccion.net/buscador?bu=${encodeURIComponent(query)}`;
     try {
         console.log(`[TC] Buscant: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-        
-        // Acceptar cookies si apareixen
         await acceptCookies(page);
-        
-        // Esperar que carreguin els resultats
         await new Promise(r => setTimeout(r, 2000));
 
         const resultats = await page.evaluate(() => {
-            // Cada lot és un .card-lote amb data-testid
             const items = document.querySelectorAll('.card-lote[data-testid]');
             let data = [];
             
             items.forEach(item => {
-                // Títol i link: a.js-lot-titles (stretched-link)
                 const linkEl = item.querySelector('a.js-lot-titles, a[id^="lot-title-"]');
-                // Preu actual: span.card-price
                 const priceEl = item.querySelector('span.card-price');
-                // Categoria (opcional)
                 const catEl = item.querySelector('a.fs-14.text-gray-500');
-                // Imatge
                 const imgEl = item.querySelector('img');
 
                 if (linkEl && priceEl) {
-                    // El títol està a l'atribut 'title' del link
                     const title = linkEl.getAttribute('title') || linkEl.textContent.trim();
-                    
-                    // Preu: "12,00 €" → 12.00
                     let priceText = priceEl.textContent.replace(/[^\d.,]/g, '').replace(',', '.').trim();
                     let price = parseFloat(priceText);
-                    
-                    // URL del lot (relativa, cal afegir el domini)
                     let href = linkEl.getAttribute('href') || '';
                     if (href && !href.startsWith('http')) {
                         href = 'https://www.todocoleccion.net' + href;
                     }
-                    
-                    // ID del lot
                     const lotId = item.getAttribute('data-testid') || '';
-                    
-                    // Categoria
                     const category = catEl ? catEl.textContent.trim() : '';
-                    
-                    // Imatge
                     const image = imgEl ? (imgEl.getAttribute('src') || '') : '';
 
                     if (!isNaN(price) && price > 0 && title.length > 0) {
-                        data.push({ 
-                            title, 
-                            price, 
-                            url: href, 
-                            lotId,
-                            category,
-                            image,
-                            source: 'Todocoleccion' 
-                        });
+                        data.push({ title, price, url: href, lotId, category, image, source: 'Todocoleccion' });
                     }
                 }
             });
             
-            // També capturem el nombre total de resultats
-            let totalText = '';
-            const totalEl = document.querySelector('.search-count, [class*="lotes"]');
-            if (totalEl) totalText = totalEl.textContent.trim();
-            // Alternativa: buscar text tipus "41.158 lotes"
             const bodyText = document.body.innerText;
             const totalMatch = bodyText.match(/([\d.]+)\s*lotes/);
             const totalLots = totalMatch ? totalMatch[1] : '0';
@@ -132,7 +150,7 @@ async function scrapeTodocoleccion(page, query) {
 }
 
 // =====================================================
-// SCRAPER IBERLIBRO (si falla, només retorna buit)
+// SCRAPER IBERLIBRO
 // =====================================================
 async function scrapeIberlibro(page, query) {
     const url = `https://www.iberlibro.com/servlet/SearchResults?kn=${encodeURIComponent(query)}&sts=t`;
@@ -150,18 +168,15 @@ async function scrapeIberlibro(page, query) {
                 const linkEl = item.querySelector('a[data-cy="listing-title"], a[itemprop="url"], a');
 
                 if (titleEl && priceEl) {
-                    let title = titleEl.textContent.trim();
-                    let priceText = priceEl.textContent.replace(/[^\d.,]/g, '').replace(',', '.').trim();
+                    let title = titleEl.innerText || titleEl.textContent || '';
+                    title = title.trim();
+                    let priceText = priceEl.innerText || priceEl.textContent || '';
+                    priceText = priceText.replace(/[^\d.,]/g, '').replace(',', '.').trim();
                     let price = parseFloat(priceText);
                     let href = linkEl ? linkEl.href : '';
                     
                     if (!isNaN(price) && price > 0 && title.length > 0) {
-                        data.push({ 
-                            title, 
-                            price, 
-                            url: href, 
-                            source: 'Iberlibro' 
-                        });
+                        data.push({ title, price, url: href, source: 'Iberlibro' });
                     }
                 }
             });
@@ -182,17 +197,39 @@ async function scrapeIberlibro(page, query) {
 app.get('/api/tassa', async (req, res) => {
     const { isbn, titol, autor } = req.query;
     
-    // Construir query de cerca: prioritzar ISBN si existeix
+    // ---- LÒGICA DE CONSTRUCCIÓ DE QUERY ----
+    // A TC l'ISBN funciona molt malament perquè gairebé cap venedor l'introdueix bé.
+    // L'usuari ha demanat prioritzar SEMPRE la cerca per Títol + Autor si estan disponibles.
+    
+    const cleanIsbn = isbn ? isbn.replace(/[-\s]/g, '') : '';
+    const hasValidIsbn = isValidIsbn(cleanIsbn);
+    const titleForSearch = (titol || '').trim();
+    const authorForSearch = (autor || '').trim();
+    
     let query = '';
-    if (isbn && isbn.length >= 10) {
-        query = isbn;
+    let searchStrategy = '';
+    
+    if (titleForSearch) {
+        // Cerca òptima per gairebé tot arreu són títol + autor
+        query = authorForSearch ? `${titleForSearch} ${authorForSearch}` : titleForSearch;
+        searchStrategy = 'TÍTOL+AUTOR';
+    } else if (hasValidIsbn) {
+        // Només buscar per ISBN si no tenim absolutament res més (cas rar a l'app)
+        query = cleanIsbn;
+        searchStrategy = 'NOMÉS ISBN';
     } else {
-        query = `${titol || ''} ${autor || ''}`.trim();
+        return res.status(400).json({ 
+            error: 'No es pot fer la cerca: falta títol per buscar i ISBN és invàlid o absent.',
+            isbn_rebut: isbn,
+            isbn_valid: false 
+        });
     }
 
-    if (!query) return res.status(400).json({ error: 'Falta paràmetre de cerca (isbn, titol o autor)' });
-
-    console.log(`\n========== NOVA TASSACIÓ: "${query}" ==========`);
+    console.log(`\n========== NOVA TASSACIÓ ==========`);
+    console.log(`  ISBN rebut: "${isbn}" → Vàlid: ${hasValidIsbn}`);
+    console.log(`  Títol: "${titleForSearch}"`);
+    console.log(`  Autor: "${authorForSearch}"`);
+    console.log(`  Query final: "${query}" (estratègia: ${searchStrategy})`);
 
     const browser = await puppeteer.launch({ 
         headless: 'new',
@@ -200,7 +237,6 @@ app.get('/api/tassa', async (req, res) => {
     });
 
     try {
-        // Paral·lelitzem TC i Iberlibro
         const [resTC, resIber] = await Promise.all([
             (async () => {
                 const p = await browser.newPage();
@@ -220,7 +256,31 @@ app.get('/api/tassa', async (req, res) => {
 
         const tcItems = resTC.items || [];
         const ibItems = resIber || [];
-        const allResults = [...tcItems, ...ibItems];
+        let allResults = [...tcItems, ...ibItems];
+        
+        // ---- FILTRE DE RELLEVÀNCIA ----
+        // Si busquem per títol (no per ISBN), filtrar resultats no rellevants
+        // Quan busques per ISBN, TC ja retorna resultats precisos
+        const unfilteredCount = allResults.length;
+        
+        if (titleForSearch && allResults.length > 0) {
+            const MIN_RELEVANCE = 0.25; // Mínim 25% de paraules en comú
+            
+            allResults = allResults.map(r => ({
+                ...r,
+                relevance: relevanceScore(r.title, titleForSearch)
+            }));
+            
+            // Log de rellevància per depuració
+            console.log('\n  --- Rellevància dels resultats ---');
+            allResults.forEach(r => {
+                const passFail = r.relevance >= MIN_RELEVANCE ? '✅' : '❌';
+                console.log(`  ${passFail} ${r.relevance.toFixed(2)} | ${r.title.substring(0, 60)}`);
+            });
+            
+            allResults = allResults.filter(r => r.relevance >= MIN_RELEVANCE);
+            console.log(`  Filtrats: ${unfilteredCount} → ${allResults.length} (mínim rellevància: ${MIN_RELEVANCE})`);
+        }
         
         // Ordenar per preu i agafar els 30 millors
         const sortedResults = allResults.sort((a, b) => a.price - b.price).slice(0, 30);
@@ -228,9 +288,11 @@ app.get('/api/tassa', async (req, res) => {
 
         const response = {
             terme: query,
+            estrategia: searchStrategy,
             llibre: { titol: titol || '', autor: autor || '', isbn: isbn || '' },
             comptador: sortedResults.length,
             totalTC: resTC.totalLots || '0',
+            filtrats: unfilteredCount - sortedResults.length,
             min: prices.length > 0 ? prices[0] : null,
             max: prices.length > 0 ? prices[prices.length - 1] : null,
             mitjana: prices.length > 0 ? parseFloat((prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(2)) : null,
@@ -238,7 +300,7 @@ app.get('/api/tassa', async (req, res) => {
             fonts: { tc: tcItems.length, iberlibro: ibItems.length }
         };
         
-        console.log(`========== RESULTAT: ${sortedResults.length} items, preu mitjà: ${response.mitjana}€ ==========\n`);
+        console.log(`========== RESULTAT: ${sortedResults.length} rellevants de ${unfilteredCount}, preu mitjà: ${response.mitjana}€ ==========\n`);
         res.json(response);
 
     } catch (error) {
@@ -251,7 +313,7 @@ app.get('/api/tassa', async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 Radar de Preus v3.0 actiu al port ${PORT}`);
+    console.log(`\n🚀 Radar de Preus v3.1 actiu al port ${PORT}`);
     console.log(`   Endpoint: http://localhost:${PORT}/api/tassa?isbn=9788420412146`);
     console.log(`   Endpoint: http://localhost:${PORT}/api/tassa?titol=quijote&autor=cervantes\n`);
 });
