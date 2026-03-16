@@ -1,3 +1,9 @@
 node_modules/
 .env
 *.log
+debug_*
+*.png
+*.html
+*.js
+!server.js
+!debug_tc.js # keep if needed, but usually better to ignore debug scripts
