@@ -177,9 +177,13 @@ async function scrapeIberlibro(page, query) {
                     
                     let href = linkEl ? linkEl.href : '';
                     if (href && !href.startsWith('http')) href = 'https://www.iberlibro.com' + href;
+
+                    const imgEl = item.querySelector('img[data-cy="listing-image"], .listing-image, .srp-item-image, img');
+                    let image = imgEl ? (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '') : '';
+                    if (image && image.startsWith('//')) image = 'https:' + image;
                     
                     if (!isNaN(price) && price > 0 && title.length > 0) {
-                        data.push({ title, price, url: href, source: 'Iberlibro' });
+                        data.push({ title, price, url: href, image, source: 'Iberlibro' });
                     }
                 }
             });
