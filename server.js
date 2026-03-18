@@ -318,6 +318,80 @@ app.get('/api/tassa', async (req, res) => {
     }
 });
 
+// =====================================================
+// API: /api/book_info?isbn=...
+// =====================================================
+app.get('/api/book_info', async (req, res) => {
+    const { isbn } = req.query;
+    if (!isbn) return res.status(400).json({ error: 'ISBN requerit' });
+    
+    const cleanIsbn = isbn.replace(/[-\s]/g, '');
+    const url = `https://www.iberlibro.com/servlet/SearchResults?kn=${cleanIsbn}&sts=t`;
+
+    console.log(`[META] Buscant dades per ISBN: ${cleanIsbn}`);
+    
+    const browser = await puppeteer.launch({ 
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    try {
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
+        
+        const metadata = await page.evaluate(() => {
+            const item = document.querySelector('[data-cy="listing-item"], .result-item, .srp-item');
+            if (!item) return null;
+
+            const titleEl = item.querySelector('[itemprop="name"], [data-cy="listing-title"], h2');
+            const authorEl = item.querySelector('.author, [itemprop="author"], [data-cy="listing-author"]');
+            const pubEl = item.querySelector('.publisher, [itemprop="publisher"], [data-cy="listing-publisher"]');
+            const imgEl = item.querySelector('img[data-cy="listing-image"], .listing-image, img');
+
+            const title = titleEl ? (titleEl.getAttribute('content') || titleEl.innerText || '').trim() : '';
+            const author = authorEl ? authorEl.innerText.trim() : '';
+            
+            // Llavors Iberlibro a vegades posa: "Editorial: XYZ, Any: 1990"
+            let pubText = pubEl ? pubEl.innerText.trim() : '';
+            let editorial = pubText;
+            let annee = '';
+            
+            const yearMatch = pubText.match(/\d{4}/);
+            if (yearMatch) {
+                annee = yearMatch[0];
+                editorial = pubText.replace(annee, '').replace(/[\(\),]/g, '').trim();
+            }
+
+            let image = imgEl ? (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '') : '';
+            if (image && image.startsWith('//')) image = 'https:' + image;
+
+            return {
+                titulo: title,
+                autor: author,
+                editorial: editorial,
+                fechaEdicion: annee,
+                imatge: image,
+                source: 'Iberlibro'
+            };
+        });
+
+        if (metadata && metadata.titulo) {
+            console.log(`[META] Trobat: ${metadata.titulo} - ${metadata.autor}`);
+            res.json(metadata);
+        } else {
+            console.log(`[META] No s'ha trobat informació detallada.`);
+            res.status(404).json({ error: 'No s\'han trobat metadades per aquest ISBN a IberLibro.' });
+        }
+
+    } catch (e) {
+        console.error('[META] Error:', e.message);
+        res.status(500).json({ error: e.message });
+    } finally {
+        await browser.close();
+    }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Radar de Preus v3.1 actiu al port ${PORT}`);
