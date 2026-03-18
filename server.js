@@ -163,17 +163,20 @@ async function scrapeIberlibro(page, query) {
             const items = document.querySelectorAll('[data-cy="listing-item"], .result-item, .srp-item');
             let data = [];
             items.forEach(item => {
-                const titleEl = item.querySelector('[data-cy="listing-title"], .title, h2, [itemprop="name"]');
-                const priceEl = item.querySelector('[data-cy="listing-price"], .item-price, .price, [itemprop="price"]');
-                const linkEl = item.querySelector('a[data-cy="listing-title"], a[itemprop="url"], a');
+                const titleEl = item.querySelector('[itemprop="name"], [data-cy="listing-title"], .title, h2');
+                const priceEl = item.querySelector('[itemprop="price"], [data-cy="listing-price"], .item-price, .price');
+                const linkEl = item.querySelector('a[itemprop="url"], a[data-cy="listing-title"], a');
 
                 if (titleEl && priceEl) {
-                    let title = titleEl.innerText || titleEl.textContent || '';
-                    title = title.trim();
-                    let priceText = priceEl.innerText || priceEl.textContent || '';
+                    let title = titleEl.getAttribute('content') || titleEl.innerText || titleEl.textContent || '';
+                    title = title.replace(/Este libro es seleccionado para ti por el vendedor/gi, '').trim();
+                    
+                    let priceText = priceEl.getAttribute('content') || priceEl.innerText || priceEl.textContent || '';
                     priceText = priceText.replace(/[^\d.,]/g, '').replace(',', '.').trim();
                     let price = parseFloat(priceText);
+                    
                     let href = linkEl ? linkEl.href : '';
+                    if (href && !href.startsWith('http')) href = 'https://www.iberlibro.com' + href;
                     
                     if (!isNaN(price) && price > 0 && title.length > 0) {
                         data.push({ title, price, url: href, source: 'Iberlibro' });
